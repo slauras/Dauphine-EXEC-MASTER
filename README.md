@@ -1,2 +1,2 @@
-# Projet xde Moodèle Linéaire Généralisé.
+# Projet Modèle Linéaire Généralisé.
 
