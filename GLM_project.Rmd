@@ -1,0 +1,440 @@
+---
+title: "Modèle-Linéaires-Généralisés"
+author: "Samuel Lauras"
+date: "`r Sys.Date()`"
+output: pdf_document
+
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+
+```
+
+## *Université Paris Dauphine (PSL)* - professeur : *Robin RYDER*
+
+## Support d'étude : Regression logistique sur les prédictiosn météorologiques
+
+![](main.jpg)
+
+\newpage
+
+```{r, results = "hide", message = FALSE}
+library(tidyverse)
+library(corrplot)
+library(pROC)
+```
+
+## Préambule :
+
+Lors de cette étude nous verrons la régression logistique dans le cadre des modèles linéaires généralisés.
+
+Les modèles logistiques sont préférés aux modèles linéaires lorsqu'il s'agit de prédire des probabilités d'événements binaires, car ils capturent mieux les relations non linéaires et produisent des résultats réalistes bornés entre 0 et 1.
+
+Nous possédons des données météorologiques, et chercherons à inférer sur chaque jour sur la probabilité de pluie pour le lendemain
+
+
+
+# 1. Analyse du jeu de donnée
+
+Le jeu de données concerne une quinzaine de données météorologiques (pressions atmosphériques, températures, vents etc...) agrégées en min,max et moyenne par jour. 
+
+Les données proviennent de *MeteoBlue*.
+
+Nous cherchons à inférer la colonne *pluie.demain* qui est binaire.
+
+```{r}
+df <- read.csv("./meteo.train.csv")
+
+print(paste("Nombre de lignes:", nrow(df)))
+print(paste("Nombre de colonnes:", ncol(df)))
+
+types_de_colonnes <- sapply(df, class)
+table(types_de_colonnes)
+```
+On voit qu'on a beaucoup de colonnes. Sachant que pour chaque variable il existe sa déclinaison min, max et moy, on s'attend à rencontrer de la corrélation entre nos variables.
+
+Essayons dans un premier temps de retirer celles qui ne nous intéressent pas, comme par exemple, celles relatives aux la date, temps, et l'ID.
+
+```{r}
+table(df$Hour,df$Minute)
+```
+On voit que même les colonnes de temps (qui pourraient être utile en fonction ) sont remplies à 0, et donc non pertinentes
+
+Nous pouvons prendre en compte le mois de l'année qui nous renseigne sur la saison, et a des chances d'impacter la venue de pluie ou non.
+Nous devons le transformer en facteur, pour que le modèle le considère comme une variable catégorielle et non quantitative.
+
+```{r}
+
+df$Month <- factor(df$Month)
+
+# retirer les colonnes indésirables
+df <- df %>% select(-id, -Year, -Day, - Hour, -Minute)
+```
+
+Regardons l'impact des variable les unes aux autres pour voir si il y a de la colinéarité.
+
+```{r}
+# trier les colonnes par ordre alphabetique (question visuelle)
+df <- df %>% select(order(names(df)))
+
+
+corrplot(cor(df[,-13]), tl.cex = 0.6, tl.col = "blue", tl.srt = 45)
+```
+On voit qu'il y a des groupes de variables très fortement corrélées. Nous devrons travailler sur cela avant de pouvoir faire notre sélection de modèles.
+
+# 2. Modélisation et selection de modèles
+
+## Sélection de variables, éliminer les corrélations
+
+Lançons une première régression afin d'obtenir un premier modèle naïf...
+
+```{r}
+# regression logistique simple
+reg.naive <- glm(formula = pluie.demain ~ . ,
+           family=binomial,
+           data = df)
+
+summary(reg.naive)
+```
+Nous voyons que beaucoup de variables ne passent pas le test de student, celles-ci n'ont donc pas d'impact significatif sur le modèle.
+
+Gardons en tête que ce premier modèle est juste "pour voir" car nous allons essayer de retirer les problèmes de multicolinéarité en retirant les variables trop corrélées entre elles.
+
+Dans les hypothèses du modèle linéaire généralisé, tout comme en régression linéaire classique, nous avons besoin que les variables ne soient pas corrélées les unes aux autres. Ce qui peut poser plusieurs problèmes : instabilité des coefficients, interprétation difficile, et augmentation des variances.
+
+
+On va partir des variables qui ont des p-valeurs les plus petites et regarder celles qui sont trop corrélées avec, pour les retirer.
+
+On va décider de ne garder que les moyennes (et min ou max qui auront un impact plus significatif que leurs moyennes) des variables.
+
+Quand à la variable Mois, étant donné que plusieures de ses modalités sont significatives, on peut la garder telle quelle, elle permettra des meilleurs prédictions.
+
+```{r}
+# Extraire les coéfficients et les p-valeurs
+coefs <- summary(reg.naive)$coefficients
+
+# Organiser les données dans un dataframe
+coeff_df <- as.data.frame(coefs)
+sorted_coeff_df <- coeff_df[order(coeff_df$`Pr(>|z|)`), c("Std. Error", "Pr(>|z|)")]
+sorted_coeff_df
+
+```
+
+
+
+Dans le cas des variables *Medium.Cloud.Cover.daily.max..mid.cld.lay* et *Wind.Speed.daily.min..10.m.above.gnd.* on décide de les garder plutôt que leur equivalent moyennes car elles ont une p-valeur suffisament petite et distinctive.
+
+
+```{r}
+# retirer du jeu de donnée les colonnes min/max ainsi que les deux spécifiées
+df.no_corr <- df %>%  select_at(vars(-contains(c("min","max")), 
+                              Medium.Cloud.Cover.daily.max..mid.cld.lay.,
+                              - Medium.Cloud.Cover.daily.mean..mid.cld.lay.,
+                              Wind.Speed.daily.min..10.m.above.gnd.,
+                              -Wind.Speed.daily.mean..10.m.above.gnd.))
+
+# trier le dataframe  
+df.no_corr <- df.no_corr %>% select(order(names(df.no_corr)))
+```
+
+```{r}
+corrplot(cor(df.no_corr[-5]), tl.cex = 0.8, tl.col = "blue", tl.srt = 45)
+```
+
+On recommance ce processus de regarder la significativité des coeficients et leurs impacts en terme de corrélations...
+
+```{r}
+reg_test2 <- glm(formula = pluie.demain ~ . ,
+           family=binomial,
+           data = df.no_corr)
+
+summary(reg_test2)
+```
+
+Meme chose on va retirer les variables qui ont des p-valeurs trop elevées et sont trop corellés à d'autres groupes de variable.
+
+```{r}
+df.no_corr <- df.no_corr %>%  select(-Low.Cloud.Cover.daily.mean..low.cld.lay., 
+                        -Relative.Humidity.daily.mean..2.m.above.gnd.,
+                        -Sunshine.Duration.daily.sum..sfc.,
+                        -Wind.Direction.daily.mean..10.m.above.gnd.,
+                        -Wind.Speed.daily.min..10.m.above.gnd.,
+                        -Wind.Speed.daily.mean..80.m.above.gnd.,
+                        -Wind.Speed.daily.mean..900.mb.)
+```
+
+```{r}
+corrplot(cor(df.no_corr[,-4]), tl.cex = 1, tl.col = "blue", tl.srt = 45)
+```
+Nous avons un graphe très satisfaisant, nous pouvons considérer ce dataframe *df.no_corr* pour modélioser nos modèles
+
+## Modélisation et recherche du meilleur modèle
+
+Commençons par chercher "à la main" un modèle logistique en sélectionnant les variables
+
+### A la main
+
+```{r}
+reg.no_corr <- glm(formula = pluie.demain ~ . ,
+           family=binomial,
+           data = df.no_corr)
+
+summary(reg.no_corr)
+```
+
+Retirons les coefficients avec les p-valeurs les plus grandes (non significatives) et variables pour les groupes de variables correlées (les vents, les températures, les nuages...).
+
+```{r}
+df.reg_manual <- df.no_corr  %>% select(-High.Cloud.Cover.daily.mean..high.cld.lay.,
+                             -Snowfall.amount.raw.daily.sum..sfc.,
+                             -Temperature.daily.mean..2.m.above.gnd.,
+                             -Total.Precipitation.daily.sum..sfc.,
+                             -Shortwave.Radiation.daily.sum..sfc.) 
+
+# regression avec selection manuelle
+reg_manual <- glm(formula = pluie.demain ~ . ,
+           family=binomial (link = "logit"),
+           data = df.reg_manual)
+summary(reg_manual)
+```
+
+Nous avons a présent un modèle sélectionne à la main qui convient.
+
+### Avec la procédure automatique
+
+Nous pouvons lancer la procédure de selection automatique à partir du dataset non corrélé pour voir si il fait mieux.
+
+```{r}
+# regression avec selection optimisée
+reg.opt.logit <- step(reg.no_corr, direction = "both",trace = 0)
+
+summary(reg.opt.logit)
+```
+
+Le modèle trouvé par l’algorithme qui sélectionne le meilleur modèle itérativement selon son AIC (Ici AIC car nous cherchons la performance brute) trouve quelque chose qui ressemble à notre sélection manuelle.
+Son AIC est meilleur, on peut considérer ce modèle comme étant plus performant que le précedant.
+
+Pour résoudre les problèmes de variables corrélées et perdre un minimum d'information. Nous pouvons choisir de faire une ACP sur nos données puis d'utiliser ces composantes principales dans le modèle. (Qui revient à faire une PLS moins élaborée).
+
+L'avantage est que nous utilisons toute l'information contenue dans l'ensemble des variables et n'avons aucun problème de multicolinéarité.
+
+Le désavantage est dans l'interprétation, et le fait qu'il faille transformer les prochaines données à inférer (ramener nos colonnes à des combinaisons linéaires pour obtenir nos composantes principales).
+
+### Avec une Analyse en Composantes Principales
+
+```{r, echo=TRUE, fig.show='hide'}
+library(FactoMineR)
+
+acp <- PCA(df[, !(names(df) %in% c("pluie.demain","Month"))],scale.unit = TRUE, ncp = 10)
+
+acp_data <- as.data.frame(acp$ind$coord)
+
+acp_data$Y <- df$pluie.demain
+
+reg_acp <- glm(Y ~ . ,
+    family = binomial,
+    data = acp_data)
+
+summary(reg_acp)
+```
+Finalement on voit que l'AIC n'est pas significativement plus bas, ainsi on ne va pas considérer cette option.
+
+### Avec une regression Probit
+
+Le modèle probit, par rapport au modèle logit, offre une gestion plus précise des observations extrêmes en utilisant une distribution normale cumulative, ce qui peut conduire à des prédictions légèrement plus réalistes dans certains contextes.
+
+```{r}
+reg.no_corr <- glm(formula = pluie.demain ~ . ,
+           family=binomial (link = "probit"),
+           data = df.no_corr)
+# regression avec selection optimisée
+reg.opt.probit <- step(reg.no_corr, direction = "both",trace = 0)
+
+summary(reg.opt.probit)
+```
+
+On voit que le modèle probit fait légèrement mieux que son équivalent logit. Nous allons le retenir pour la suite.
+
+
+## Evaluation du modèle sur les données (C)
+
+Nous allons effectuer une cross-validation, pour tester les erreurs produites par le modèle en conditions réelles, c'est à dire entraîné avec une partie des données puis évalué sur le reste du jeu de données, le tout répèté pour pouvoir comparer notre modèle logistique du probit.
+
+Nous choisissons
+```{r}
+library(caret)
+
+# le nombre de folds à effectuer
+
+k <- 10
+n <- nrow(df)
+
+results <- data.frame(
+  MODEL = character(0),
+  R2 = numeric(0),
+  RMSE = numeric(0),
+  MAE = numeric(0)
+)
+
+for (model.type in c("logit","probit")){
+  for (i in 1:k) {
+    # désordonner les données de façon aléatoires
+    data <- df.no_corr[sample(n),]
+    
+    #répartir les données en 80% train / 20% test
+    data.train  <- data[1:floor(n*0.8), ]
+    data.test <- data[floor(n*0.8):n, ]
+    
+    # construire le modèle
+    if (model.type=="logit"){
+      model.trained <- glm(formula = pluie.demain ~ Mean.Sea.Level.Pressure.daily.mean..MSL. + 
+        Medium.Cloud.Cover.daily.max..mid.cld.lay. + Month + Temperature.daily.mean..2.m.above.gnd. + 
+        Total.Cloud.Cover.daily.mean..sfc. + Wind.Direction.daily.mean..80.m.above.gnd. + 
+        Wind.Direction.daily.mean..900.mb. + Wind.Gust.daily.mean..sfc., 
+        family = binomial(link = "logit"), 
+        data = data.train)
+    } else {
+      model.trained <- glm(formula = pluie.demain ~ Mean.Sea.Level.Pressure.daily.mean..MSL. + 
+        Medium.Cloud.Cover.daily.max..mid.cld.lay. + Month + Snowfall.amount.raw.daily.sum..sfc. + 
+        Temperature.daily.mean..2.m.above.gnd. + Total.Cloud.Cover.daily.mean..sfc. + 
+        Wind.Direction.daily.mean..80.m.above.gnd. + Wind.Direction.daily.mean..900.mb. + 
+        Wind.Gust.daily.mean..sfc., 
+        family = binomial(link = "probit"), 
+        data = data.train)
+    }
+    # prédire et les évaluer selon plusieurs critères
+    predictions <- predict(model.trained, data.test)
+    res <- data.frame( MODEL = model.type,
+              R2 = R2(predictions, data.test$pluie.demain),
+              RMSE = RMSE(predictions, data.test$pluie.demain),
+              MAE = MAE(predictions, data.test$pluie.demain))
+    
+    results <- rbind(results, res)
+  }
+}
+
+results %>% group_by(MODEL) %>% summarize_all(mean)
+```
+On peut voir que le modèle Probit est bien meilleur que sont concurrent logit, on s'y attendait avec un AIC plus faible, mais une cross-validation sur des données réelles nous permet de nous rendre compte à quel point.
+
+Ce modèle reg.opt.probit semble être le meilleur trouvé jusqu'ici, nous allons à présent le considérer dans la suite de l'étude.
+
+# 3. Prediction et test du modèle
+
+Commençons les prédiction avec notre modèle. Dans un premier temps sur nos données pour se rendre compte de sa performance prédictive.
+
+Le modèle probit (tout comme le logistique) nous fournis une inférence, nombre compris entre 0 et 1.
+
+Pour interpréter ce résultat nous devons fixer un seuil de décision pour-lequel on considère le résultat positif ou négatif.
+
+Le choix du seuil dépend du contexte et de la performance du modèle. Le modèle va toujours faire des erreures, faux positifs et négatifs, il s'agit de trouver le bon compromis.
+
+En effet en fonction du contexte, il va être plus ou moins critique d'affirmer ou non un diagnostique.
+
+- Test sensible:
+Prenons le cas d'un test covid, il est préférable que le test indique positif même si nous ne sommes pas certain que la personne est en réalité malade, elle peux etre saine (=faux positif). L'inverse est cependant critique, une personne malade non détectée est très grave (test négatif alors que la personne est malade = faux négatif). On va chercher à réduire le nombre de faux négatifs.
+
+- Test spécifique:
+Prenons le dépistage du cancer du pancréas, les traitements peuvent être invasifs et ont des effets secondaires significatifs. Le diagnostic erroné peut entraîner des traitements inutiles et des interventions chirurgicales non souhaités. Ici on va chercher à réduire le nombre de faux-positifs et à valider le diagnostique qu'avec certitude.
+
+- Compromis, meilleure prédictions:
+Dans notre cas où nous cherchons à être le plus fiable possible et d'avoir une balance correcte entre faux négatifs et faux positifs, nous cherchons à les minimiser. Ainsi nous pouvons chercher un seuil t idéal tel qui maximise le nombre prédictions correctes.
+
+Nous verrons 2 méthodes pour cela: 
+- le critère de youden : qui minimise *Sensibilité + Specificité - 1* respectivement sensibilité étant le taux de Vrais positifs, et Specificité le taux de Vrais négatifs.
+- le critère de minimisation de la distance au coin supérieur gauche.
+
+Nous fixons un seuil à 0.5 pour l'instant.
+
+## Matrice de confusion
+
+```{r}
+df.eval <- data.frame(
+  pluie.demain = df.no_corr[,"pluie.demain"],
+  regression = predict(reg.opt.probit, df.no_corr, type = "response")
+  )
+
+df.eval$prediction <- ifelse(df.eval$regression > 0.5, 1, 0)
+
+head(df.eval,5)
+```
+
+```{r}
+# Matrice de confusion
+table(df.eval$pluie.demain, df.eval$prediction)
+```
+*#TODO*
+
+## courbe ROC
+
+```{r, message = FALSE}
+
+
+# Créer l'objet ROC
+pred <- predict(reg.opt.probit, type = "response")
+roc_obj <- roc(df$pluie.demain, pred)
+
+# Tracer la courbe ROC
+plot(roc_obj, col = "blue", main = "Courbe ROC")
+
+# Ajouter l'AUC au graphique
+auc_value <- auc(roc_obj)
+text(0.6, 0.4, paste("AUC =", round(auc_value, 3)), col = "red")
+
+# Calcul des seuils optimaux
+threshold_youden <- round(coords(roc_obj, "best", ret = "threshold", best.method = "youden"),4)
+threshold_dist <- round(coords(roc_obj, "best", ret = "threshold", best.method = "closest.topleft"),4)
+
+# légende et tracés
+abline(v=threshold_youden, col="red")
+abline(v=threshold_dist, col = "purple")
+
+legend("bottomright", legend = c(paste("Youden :",threshold_youden),
+                                 paste("dist. du coin :",threshold_dist)),
+       col = c("red", "purple"), lty = 2, lwd = 2)
+
+
+```
+AUC ~ 0.8 , Bonne performance
+
+*#TODO*
+
+```{r}
+# seuil optimal est la moyenne des deux methodes précedants
+threshold_opt = mean(c(threshold_dist$threshold, threshold_youden$threshold))
+# Recalcul des prédictions avec le nouveau seuil      
+df.eval$prediction <- ifelse(df.eval$regression > threshold_opt, 1, 0)
+# Matrice de confusion
+table(df.eval$pluie.demain, df.eval$prediction)
+```
+## Predictions sur le fichier météo
+
+*#TODO*
+
+```{r}
+df.test <- read.csv("./meteo.test.csv")
+
+df.test$Month <- factor(df.test$Month)
+
+df.test.pred <- data.frame(regression = predict(reg.opt.probit, df.test, type = "response"))
+
+df.test.pred$prediction <- ifelse(df.test.pred$regression > threshold_opt, T, F)
+
+df.test.pred <- cbind(df.test[,2:4], df.test.pred )
+
+head(df.test.pred)
+```
+*#TODO*
+
+# Conclusion
+
+## Prise de recule générale
+
+## Critique et améliorations: 
+
++ inclure la temporalité des des données dans le modèle (inclure la saisonnalité des données, c'est à dire le mois de l'année en tant que variable qualitative)
++ proposer une plus grande granularité temporelle des données (3 par jours), avec une sortie pluie.demain en probabilité plutôt que binaire
++ inclure des variable météorologiques (agrégées) qui correspondrait à un historique des jours précédants, pour avoir une notion de série temporelle dans l'impact de la pluie demain, pour ne pas seulement prendre en compte les phénomènes présents
++
