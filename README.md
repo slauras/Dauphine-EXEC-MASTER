@@ -1,1 +1,2 @@
-# Dauphine-EXEC-MASTER
+# Projet xde Moodèle Linéaire Généralisé.
+
