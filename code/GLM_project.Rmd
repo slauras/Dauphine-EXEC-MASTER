@@ -91,13 +91,17 @@ On voit qu'il y a des groupes de variables très fortement corrélées. Nous dev
 Lançons une première régression afin d'obtenir un premier modèle naïf...
 
 ```{r}
+
+options(width = 200)
+
 # regression logistique simple
 reg.naive <- glm(formula = pluie.demain ~ . ,
            family=binomial,
            data = df)
 
-summary(reg.naive)
+summary(reg.naive, )
 ```
+
 Nous voyons que beaucoup de variables ne passent pas le test de student, celles-ci n'ont donc pas d'impact significatif sur le modèle.
 
 Gardons en tête que ce premier modèle est juste "pour voir" car nous allons essayer de retirer les problèmes de multicolinéarité en retirant les variables trop corrélées entre elles.
@@ -118,7 +122,7 @@ coefs <- summary(reg.naive)$coefficients
 # Organiser les données dans un dataframe
 coeff_df <- as.data.frame(coefs)
 sorted_coeff_df <- coeff_df[order(coeff_df$`Pr(>|z|)`), c("Std. Error", "Pr(>|z|)")]
-sorted_coeff_df
+head(sorted_coeff_df,10)
 
 ```
 
@@ -346,6 +350,8 @@ Nous verrons 2 méthodes pour cela:
 - le critère de youden : qui minimise *Sensibilité + Specificité - 1* respectivement sensibilité étant le taux de Vrais positifs, et Specificité le taux de Vrais négatifs.
 - le critère de minimisation de la distance au coin supérieur gauche.
 
+Ici nous décidons le compris de se tromper le moins souvent, donc on cherchera un critère qui minimise les Faux négatifs et positifs.
+
 Nous fixons un seuil à 0.5 pour l'instant.
 
 ## Matrice de confusion
@@ -365,7 +371,7 @@ head(df.eval,5)
 # Matrice de confusion
 table(df.eval$pluie.demain, df.eval$prediction)
 ```
-*#TODO*
+On voit ici les faux-positifs et négatifs, on constate à l’œil qu'un bon cinquième des données sont mal prédites, mais cela reste relativement satisfaisant.
 
 ## courbe ROC
 
@@ -397,9 +403,12 @@ legend("bottomright", legend = c(paste("Youden :",threshold_youden),
 
 
 ```
+
+La courbe ROC test la matrice de confusion avec tout les seuils possibles. elle permet de voit la qualité de prédiction et trouver le meilleur seuil.
+
 AUC ~ 0.8 , Bonne performance
 
-*#TODO*
+Nous pouvons prendre une moyenne des deux seuils pour fixer une seuil optimum.
 
 ```{r}
 # seuil optimal est la moyenne des deux methodes précedants
@@ -411,30 +420,52 @@ table(df.eval$pluie.demain, df.eval$prediction)
 ```
 ## Predictions sur le fichier météo
 
-*#TODO*
+Utilisons notre modèle entraîné sur des nouvelles données afin de les prédire.
 
 ```{r}
+# importation et transformation du jeu de données
 df.test <- read.csv("./meteo.test.csv")
-
 df.test$Month <- factor(df.test$Month)
 
+# appeler le modèle et inférer les données
 df.test.pred <- data.frame(regression = predict(reg.opt.probit, df.test, type = "response"))
 
+# appliquer la prévision avec le seuil
 df.test.pred$prediction <- ifelse(df.test.pred$regression > threshold_opt, T, F)
 
-df.test.pred <- cbind(df.test[,2:4], df.test.pred )
+# concaténer les données de prévisions et le jeu de données
+df.test.pred <- cbind(df.test[,1:4], df.test.pred )
+
+# sauver les résultats dans un fichier de sortie
+write.csv(df.test.pred, file = "previsions.csv", row.names = FALSE)
 
 head(df.test.pred)
 ```
-*#TODO*
+
+** Les données sont disponible dans le fichier *previsions.csv*
+
+Bien que nous ne puissions pas vérifier la qualité des données, les observations précédentes sur la cross-validation et la courbe ROC nous donnent une haute qualité d'ajustement des données avec le modèle.
+
+Les nouvelles données à inférer se trouvent être de la même source que les premières, ainsi on peut s'attendre que les prévisions soient bonnes.
 
 # Conclusion
 
-## Prise de recule générale
+## Prise de recul générale :
+
+Cette étude nous illustre un cas d'utilisation concrète d'une régression  logistique linéaire (et probit) sur des données structurées en apprentissage supervisé.
+
+Il est très intéressant d'étudier les hypothèses des modèles pour valider mathématiquement leurs fondements et comprendre s'il a un sens face à nos données.
+
+Les GLM nous offrent la possibilité d'adapter la fonction de lien (& distribution des erreurs) pour mieux correspondre aux caractéristiques des données, permettant ainsi de modéliser une large gamme de types de variables dépendantes au-delà des simples relations linéaires.
 
 ## Critique et améliorations: 
 
+Des axes d'améliorations sont envisageables pour améliorer la qualité des prédictions:
+
 + inclure la temporalité des des données dans le modèle (inclure la saisonnalité des données, c'est à dire le mois de l'année en tant que variable qualitative)
-+ proposer une plus grande granularité temporelle des données (3 par jours), avec une sortie pluie.demain en probabilité plutôt que binaire
-+ inclure des variable météorologiques (agrégées) qui correspondrait à un historique des jours précédants, pour avoir une notion de série temporelle dans l'impact de la pluie demain, pour ne pas seulement prendre en compte les phénomènes présents
-+
+
++ proposer une plus grande granularité temporelle des données (3 par jour), avec une sortie pluie.demain en probabilité plutôt que binaire
+
++ inclure des variable météorologiques (agrégées) qui correspondraient à un historique des jours précédents, pour avoir une notion de série temporelle dans l'impact de la pluie demain, pour ne pas seulement prendre en compte les phénomènes présents
+
++ utiliser d'une fonction STEP basé sur le BIC qui prend plus en compte la parcimonie du modèle que sa performance brute
